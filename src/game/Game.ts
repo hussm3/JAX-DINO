@@ -4,6 +4,7 @@ import { Coin } from './entities/Coin';
 import { Platform } from './entities/Platform';
 import { Camera } from './Camera';
 import { InputHandler } from './InputHandler';
+import { LevelManager } from './LevelManager';
 
 export default class Game {
   private canvas: HTMLCanvasElement;
@@ -18,56 +19,46 @@ export default class Game {
   private score: number = 0;
   private gameWon: boolean = false;
   private gameOver: boolean = false;
+  private levelManager: LevelManager;
+  private showLevelSelect: boolean = false;
+  private levelCompleteTimer: number = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
     this.camera = new Camera(0, 0, canvas.width, canvas.height);
     this.inputHandler = new InputHandler();
-    this.player = new Player(100, 400);
+    this.levelManager = new LevelManager();
     
-    this.setupLevel();
+    this.loadCurrentLevel();
   }
 
-  private setupLevel() {
-    // Ground platforms
-    this.platforms = [
-      new Platform(0, 550, 200, 50),
-      new Platform(300, 500, 150, 20),
-      new Platform(500, 450, 150, 20),
-      new Platform(700, 400, 150, 20),
-      new Platform(900, 350, 150, 20),
-      new Platform(1100, 300, 150, 20),
-      new Platform(1300, 400, 200, 20),
-      new Platform(1600, 450, 150, 20),
-      new Platform(1850, 500, 150, 20),
-      new Platform(2100, 400, 300, 50), // Town center platform
-      // Ground level
-      new Platform(-100, 580, 2500, 50),
-    ];
-
-    // Enemies (Jaguars and Hipsters)
-    this.enemies = [
-      new Enemy(400, 470, 'jaguar'),
-      new Enemy(600, 420, 'alligator'),
-      new Enemy(1000, 320, 'jaguar'),
-      new Enemy(1400, 370, 'alligator'),
-      new Enemy(1700, 420, 'jaguar'),
-    ];
-
-    // Coins
-    this.coins = [
-      new Coin(350, 450),
-      new Coin(550, 400),
-      new Coin(750, 350),
-      new Coin(950, 300),
-      new Coin(1150, 250),
-      new Coin(1350, 350),
-      new Coin(1650, 400),
-      new Coin(1900, 450),
-      new Coin(2120, 350), // Left side of town center platform
-      new Coin(2160, 350), // Left side of town center platform
-    ];
+  private loadCurrentLevel() {
+    const levelData = this.levelManager.getCurrentLevel();
+    
+    // Reset game state
+    this.gameWon = false;
+    this.gameOver = false;
+    this.score = 0;
+    this.levelCompleteTimer = 0;
+    
+    // Create player at starting position
+    this.player = new Player(levelData.playerStart.x, levelData.playerStart.y);
+    
+    // Create platforms
+    this.platforms = levelData.platforms.map(p => 
+      new Platform(p.x, p.y, p.width, p.height)
+    );
+    
+    // Create enemies
+    this.enemies = levelData.enemies.map(e => 
+      new Enemy(e.x, e.y, e.type)
+    );
+    
+    // Create coins
+    this.coins = levelData.coins.map(c => 
+      new Coin(c.x, c.y)
+    );
   }
 
   public start() {
@@ -87,7 +78,20 @@ export default class Game {
   };
 
   private update() {
-    if (this.gameWon || this.gameOver) return;
+    if (this.showLevelSelect) {
+      this.handleLevelSelectInput();
+      return;
+    }
+
+    if (this.gameWon) {
+      this.levelCompleteTimer++;
+      if (this.levelCompleteTimer > 180) { // 3 seconds at 60fps
+        this.nextLevel();
+      }
+      return;
+    }
+    
+    if (this.gameOver) return;
 
     this.player.update(this.inputHandler, this.platforms);
     
@@ -122,9 +126,11 @@ export default class Game {
       return true;
     });
 
-    // Check win condition (reach town center)
-    if (this.player.x > 2300 && this.player.y < 400) {
+    // Check win condition
+    const levelData = this.levelManager.getCurrentLevel();
+    if (this.player.x > levelData.winCondition.x && this.player.y < levelData.winCondition.y) {
       this.gameWon = true;
+      this.levelManager.completeLevel(this.levelManager.getCurrentLevelNumber());
     }
 
     // Check if player fell off the map
@@ -141,6 +147,42 @@ export default class Game {
     this.camera.y = Math.max(-200, Math.min(0, this.camera.y));
   }
 
+  private handleLevelSelectInput() {
+    // Handle mouse clicks for level selection
+    // This will be handled by the canvas click event
+  }
+
+  private nextLevel() {
+    const currentLevel = this.levelManager.getCurrentLevelNumber();
+    if (currentLevel < this.levelManager.getTotalLevels()) {
+      this.levelManager.setCurrentLevel(currentLevel + 1);
+      this.loadCurrentLevel();
+    } else {
+      // All levels completed - show level select
+      this.showLevelSelect = true;
+    }
+  }
+
+  public selectLevel(levelId: number) {
+    if (this.levelManager.isLevelUnlocked(levelId)) {
+      this.levelManager.setCurrentLevel(levelId);
+      this.loadCurrentLevel();
+      this.showLevelSelect = false;
+    }
+  }
+
+  public toggleLevelSelect() {
+    this.showLevelSelect = !this.showLevelSelect;
+  }
+
+  public isShowingLevelSelect(): boolean {
+    return this.showLevelSelect;
+  }
+
+  public getLevelManager(): LevelManager {
+    return this.levelManager;
+  }
+
   private checkCollision(rect1: any, rect2: any): boolean {
     return rect1.x < rect2.x + rect2.width &&
            rect1.x + rect1.width > rect2.x &&
@@ -149,6 +191,11 @@ export default class Game {
   }
 
   private render() {
+    if (this.showLevelSelect) {
+      this.renderLevelSelect();
+      return;
+    }
+
     // Draw Jacksonville skyline background
     this.drawJacksonvilleSkyline();
 
@@ -168,8 +215,8 @@ export default class Game {
     // Draw player
     this.player.render(this.ctx);
 
-    // Draw town center
-    this.drawTownCenter();
+    // Draw level goal
+    this.drawLevelGoal();
 
     // Restore context
     this.ctx.restore();
@@ -178,19 +225,79 @@ export default class Game {
     this.drawUI();
   }
 
-  private drawTownCenter() {
-    // Move town center to the right side of the platform
-    this.ctx.fillStyle = '#4A5568';
-    this.ctx.fillRect(2300, 200, 100, 200);
-    this.ctx.fillStyle = '#2D3748';
-    this.ctx.fillRect(2310, 210, 80, 180);
+  private renderLevelSelect() {
+    // Dark background
+    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.9)';
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     
-    // Town Center sign - centered at top
+    // Title
+    this.ctx.fillStyle = '#F7FAFC';
+    this.ctx.font = 'bold 36px Arial';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText('Select Level', this.canvas.width / 2, 80);
+    
+    // Level circles
+    const levels = this.levelManager.getAllLevels();
+    const startX = this.canvas.width / 2 - (levels.length * 60) / 2;
+    const y = this.canvas.height / 2;
+    
+    levels.forEach((level, index) => {
+      const x = startX + (index * 80);
+      
+      // Circle background
+      this.ctx.beginPath();
+      this.ctx.arc(x, y, 25, 0, Math.PI * 2);
+      
+      if (level.completed) {
+        this.ctx.fillStyle = '#10B981'; // Green for completed
+      } else if (level.unlocked) {
+        this.ctx.fillStyle = '#3B82F6'; // Blue for unlocked
+      } else {
+        this.ctx.fillStyle = '#6B7280'; // Gray for locked
+      }
+      this.ctx.fill();
+      
+      // Level number
+      this.ctx.fillStyle = '#FFFFFF';
+      this.ctx.font = 'bold 18px Arial';
+      this.ctx.textAlign = 'center';
+      this.ctx.fillText(level.id.toString(), x, y + 6);
+      
+      // Level name
+      this.ctx.fillStyle = level.unlocked ? '#F7FAFC' : '#9CA3AF';
+      this.ctx.font = '14px Arial';
+      this.ctx.fillText(level.name, x, y + 45);
+      
+      // Completion checkmark
+      if (level.completed) {
+        this.ctx.fillStyle = '#FFFFFF';
+        this.ctx.font = 'bold 16px Arial';
+        this.ctx.fillText('✓', x + 18, y - 15);
+      }
+    });
+    
+    // Instructions
+    this.ctx.fillStyle = '#9CA3AF';
+    this.ctx.font = '16px Arial';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText('Click on a level to play it', this.canvas.width / 2, this.canvas.height - 100);
+    this.ctx.fillText('Press ESC to return to current level', this.canvas.width / 2, this.canvas.height - 70);
+    
+    this.ctx.textAlign = 'left'; // Reset text alignment
+  }
+
+  private drawLevelGoal() {
+    const levelData = this.levelManager.getCurrentLevel();
+    this.ctx.fillStyle = '#4A5568';
+    this.ctx.fillRect(levelData.winCondition.x, levelData.winCondition.y - 200, 100, 200);
+    this.ctx.fillStyle = '#2D3748';
+    this.ctx.fillRect(levelData.winCondition.x + 10, levelData.winCondition.y - 190, 80, 180);
+    
+    // Goal sign
     this.ctx.fillStyle = '#F7FAFC';
     this.ctx.font = '16px Arial';
     this.ctx.textAlign = 'center';
-    this.ctx.fillText('TOWN', 2350, 230);
-    this.ctx.fillText('CENTER', 2350, 250);
+    this.ctx.fillText('GOAL', levelData.winCondition.x + 50, levelData.winCondition.y - 170);
     this.ctx.textAlign = 'left'; // Reset text alignment
   }
 
@@ -283,7 +390,8 @@ export default class Game {
     // Score
     this.ctx.fillStyle = '#1A202C';
     this.ctx.font = 'bold 24px Arial';
-    this.ctx.fillText(`Score: ${this.score}`, 20, 40);
+    this.ctx.fillText(`Level ${this.levelManager.getCurrentLevelNumber()}: ${this.levelManager.getCurrentLevel().name}`, 20, 30);
+    this.ctx.fillText(`Score: ${this.score}`, 20, 60);
 
     // Game over/win screens
     if (this.gameOver) {
@@ -308,11 +416,67 @@ export default class Game {
       this.ctx.fillStyle = '#F7FAFC';
       this.ctx.font = 'bold 48px Arial';
       this.ctx.textAlign = 'center';
-      this.ctx.fillText('You made it to the Town Center!', this.canvas.width / 2, this.canvas.height / 2 - 50);
+      this.ctx.fillText('Level Complete!', this.canvas.width / 2, this.canvas.height / 2 - 50);
       this.ctx.font = '24px Arial';
       this.ctx.fillText(`Final Score: ${this.score}`, this.canvas.width / 2, this.canvas.height / 2);
-      this.ctx.fillText('Refresh to play again', this.canvas.width / 2, this.canvas.height / 2 + 40);
+      
+      const currentLevel = this.levelManager.getCurrentLevelNumber();
+      if (currentLevel < this.levelManager.getTotalLevels()) {
+        this.ctx.fillText('Loading next level...', this.canvas.width / 2, this.canvas.height / 2 + 40);
+      } else {
+        this.ctx.fillText('All levels completed!', this.canvas.width / 2, this.canvas.height / 2 + 40);
+      }
       this.ctx.textAlign = 'left';
     }
+    
+    // Level select circles at bottom
+    if (!this.gameWon && !this.gameOver && !this.showLevelSelect) {
+      this.drawLevelSelectCircles();
+    }
+  }
+  
+  private drawLevelSelectCircles() {
+    const levels = this.levelManager.getAllLevels();
+    const startX = this.canvas.width / 2 - (levels.length * 30) / 2;
+    const y = this.canvas.height - 40;
+    
+    levels.forEach((level, index) => {
+      const x = startX + (index * 40);
+      
+      // Circle background
+      this.ctx.beginPath();
+      this.ctx.arc(x, y, 15, 0, Math.PI * 2);
+      
+      if (level.completed) {
+        this.ctx.fillStyle = '#10B981'; // Green for completed
+      } else if (level.unlocked) {
+        this.ctx.fillStyle = '#3B82F6'; // Blue for unlocked
+      } else {
+        this.ctx.fillStyle = '#374151'; // Dark gray for locked
+      }
+      this.ctx.fill();
+      
+      // Current level indicator
+      if (level.id === this.levelManager.getCurrentLevelNumber()) {
+        this.ctx.strokeStyle = '#F59E0B';
+        this.ctx.lineWidth = 3;
+        this.ctx.stroke();
+      }
+      
+      // Level number
+      this.ctx.fillStyle = '#FFFFFF';
+      this.ctx.font = 'bold 12px Arial';
+      this.ctx.textAlign = 'center';
+      this.ctx.fillText(level.id.toString(), x, y + 4);
+      
+      // Completion checkmark
+      if (level.completed) {
+        this.ctx.fillStyle = '#FFFFFF';
+        this.ctx.font = 'bold 10px Arial';
+        this.ctx.fillText('✓', x + 10, y - 8);
+      }
+    });
+    
+    this.ctx.textAlign = 'left'; // Reset text alignment
   }
 }
