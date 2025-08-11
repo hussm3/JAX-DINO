@@ -4,6 +4,8 @@ import { Coin } from './entities/Coin';
 import { Platform } from './entities/Platform';
 import { Camera } from './Camera';
 import { InputHandler } from './InputHandler';
+import { GameState, GameStateManager } from './GameState';
+import { LEVELS, LevelData, createPlatformsFromData, createEnemiesFromData, createCoinsFromData } from './levels/LevelConfig';
 
 export default class Game {
   private canvas: HTMLCanvasElement;
@@ -18,56 +20,33 @@ export default class Game {
   private score: number = 0;
   private gameWon: boolean = false;
   private gameOver: boolean = false;
+  private gameState: GameState;
+  private currentLevelData: LevelData;
+  private onLevelComplete?: (nextLevel: number) => void;
+  private onGameStateChange?: (state: GameState) => void;
+  private onRestart?: () => void;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, level: number = 1, onLevelComplete?: (nextLevel: number) => void, onGameStateChange?: (state: GameState) => void, onRestart?: () => void) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
     this.camera = new Camera(0, 0, canvas.width, canvas.height);
     this.inputHandler = new InputHandler();
-    this.player = new Player(100, 400);
+    this.onLevelComplete = onLevelComplete;
+    this.onGameStateChange = onGameStateChange;
+    this.onRestart = onRestart;
+    
+    this.gameState = GameStateManager.loadGameState();
+    this.currentLevelData = LEVELS.find(l => l.id === level) || LEVELS[0];
+    this.player = new Player(this.currentLevelData.playerStart.x, this.currentLevelData.playerStart.y);
     
     this.setupLevel();
   }
 
   private setupLevel() {
-    // Ground platforms
-    this.platforms = [
-      new Platform(0, 550, 200, 50),
-      new Platform(300, 500, 150, 20),
-      new Platform(500, 450, 150, 20),
-      new Platform(700, 400, 150, 20),
-      new Platform(900, 350, 150, 20),
-      new Platform(1100, 300, 150, 20),
-      new Platform(1300, 400, 200, 20),
-      new Platform(1600, 450, 150, 20),
-      new Platform(1850, 500, 150, 20),
-      new Platform(2100, 400, 300, 50), // Town center platform
-      // Ground level
-      new Platform(-100, 580, 2500, 50),
-    ];
-
-    // Enemies (Jaguars and Hipsters)
-    this.enemies = [
-      new Enemy(400, 470, 'jaguar'),
-      new Enemy(600, 420, 'alligator'),
-      new Enemy(1000, 320, 'jaguar'),
-      new Enemy(1400, 370, 'alligator'),
-      new Enemy(1700, 420, 'jaguar'),
-    ];
-
-    // Coins
-    this.coins = [
-      new Coin(350, 450),
-      new Coin(550, 400),
-      new Coin(750, 350),
-      new Coin(950, 300),
-      new Coin(1150, 250),
-      new Coin(1350, 350),
-      new Coin(1650, 400),
-      new Coin(1900, 450),
-      new Coin(2120, 350), // Left side of town center platform
-      new Coin(2160, 350), // Left side of town center platform
-    ];
+    this.platforms = createPlatformsFromData(this.currentLevelData.platforms);
+    this.enemies = createEnemiesFromData(this.currentLevelData.enemies);
+    this.coins = createCoinsFromData(this.currentLevelData.coins);
+    this.score = this.gameState.score;
   }
 
   public start() {
@@ -88,6 +67,14 @@ export default class Game {
 
   private update() {
     if (this.gameWon || this.gameOver) return;
+
+    // Check for restart key
+    if ((this.gameOver || this.gameWon) && this.inputHandler.isPressed('KeyR')) {
+      if (this.onRestart) {
+        this.onRestart();
+      }
+      return;
+    }
 
     this.player.update(this.inputHandler, this.platforms);
     
@@ -122,9 +109,29 @@ export default class Game {
       return true;
     });
 
-    // Check win condition (reach town center)
-    if (this.player.x > 2300 && this.player.y < 400) {
+    // Check win condition
+    if (this.player.x > this.currentLevelData.winCondition.x && this.player.y < this.currentLevelData.winCondition.y) {
       this.gameWon = true;
+      
+      // Update game state
+      this.gameState.score = this.score;
+      const nextLevel = this.currentLevelData.id + 1;
+      if (nextLevel <= LEVELS.length && !this.gameState.unlockedLevels.includes(nextLevel)) {
+        GameStateManager.unlockLevel(nextLevel);
+        this.gameState = GameStateManager.loadGameState();
+      }
+      GameStateManager.saveGameState(this.gameState);
+      
+      if (this.onGameStateChange) {
+        this.onGameStateChange(this.gameState);
+      }
+      
+      // Trigger level complete callback after a short delay
+      if (this.onLevelComplete && nextLevel <= LEVELS.length) {
+        setTimeout(() => {
+          this.onLevelComplete!(nextLevel);
+        }, 2000);
+      }
     }
 
     // Check if player fell off the map
@@ -149,8 +156,8 @@ export default class Game {
   }
 
   private render() {
-    // Draw Jacksonville skyline background
-    this.drawJacksonvilleSkyline();
+    // Draw background based on level
+    this.drawBackground();
 
     // Save context for camera transform
     this.ctx.save();
@@ -168,8 +175,8 @@ export default class Game {
     // Draw player
     this.player.render(this.ctx);
 
-    // Draw town center
-    this.drawTownCenter();
+    // Draw level goal
+    this.drawLevelGoal();
 
     // Restore context
     this.ctx.restore();
@@ -178,44 +185,101 @@ export default class Game {
     this.drawUI();
   }
 
-  private drawTownCenter() {
-    // Move town center to the right side of the platform
-    this.ctx.fillStyle = '#4A5568';
-    this.ctx.fillRect(2300, 200, 100, 200);
-    this.ctx.fillStyle = '#2D3748';
-    this.ctx.fillRect(2310, 210, 80, 180);
+  private drawLevelGoal() {
+    const goalX = this.currentLevelData.winCondition.x;
+    const goalY = this.currentLevelData.winCondition.y - 200;
     
-    // Town Center sign - centered at top
+    this.ctx.fillStyle = '#4A5568';
+    this.ctx.fillRect(goalX, goalY, 100, 200);
+    this.ctx.fillStyle = '#2D3748';
+    this.ctx.fillRect(goalX + 10, goalY + 10, 80, 180);
+    
+    // Goal sign
     this.ctx.fillStyle = '#F7FAFC';
     this.ctx.font = '16px Arial';
     this.ctx.textAlign = 'center';
-    this.ctx.fillText('TOWN', 2350, 230);
-    this.ctx.fillText('CENTER', 2350, 250);
+    this.ctx.fillText('GOAL', goalX + 50, goalY + 30);
+    this.ctx.fillText(`LV${this.currentLevelData.id}`, goalX + 50, goalY + 50);
     this.ctx.textAlign = 'left'; // Reset text alignment
   }
 
-  private drawJacksonvilleSkyline() {
-    // Simple Florida sky
+  private drawBackground() {
+    switch (this.currentLevelData.background) {
+      case 'jungle':
+        this.drawJungleBackground();
+        break;
+      case 'swamp':
+        this.drawSwampBackground();
+        break;
+      case 'mountain':
+        this.drawMountainBackground();
+        break;
+      default:
+        this.drawJungleBackground();
+    }
+  }
+
+  private drawJungleBackground() {
+    // Jungle sky
     this.ctx.fillStyle = '#87CEEB';
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    
+    this.drawSun(150, 100);
+    this.drawClouds();
+    this.drawGround('#22C55E');
+    this.drawPalmTrees();
+  }
 
-    // Simple sun
-    this.ctx.fillStyle = '#FFD700';
+  private drawSwampBackground() {
+    // Swamp sky (darker, more ominous)
+    this.ctx.fillStyle = '#6B7280';
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    
+    this.drawSun(150, 120, '#D1D5DB'); // Pale sun
+    this.drawClouds('#9CA3AF'); // Gray clouds
+    this.drawGround('#065F46'); // Dark swamp green
+    this.drawSwampTrees();
+  }
+
+  private drawMountainBackground() {
+    // Mountain sky (crisp blue)
+    this.ctx.fillStyle = '#3B82F6';
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    
+    this.drawSun(150, 80);
+    this.drawClouds();
+    this.drawGround('#8B5A2B'); // Rocky ground
+    this.drawMountainPeaks();
+  }
+
+  private drawSun(x: number, y: number, color: string = '#FFD700') {
+    this.ctx.fillStyle = color;
     this.ctx.beginPath();
-    this.ctx.arc(150, 100, 40, 0, Math.PI * 2);
+    this.ctx.arc(x, y, 40, 0, Math.PI * 2);
     this.ctx.fill();
+  }
 
-    // Simple clouds
-    this.ctx.fillStyle = '#FFFFFF';
+  private drawClouds(color: string = '#FFFFFF') {
+    this.ctx.fillStyle = color;
     this.drawSimpleCloud(300, 80);
     this.drawSimpleCloud(600, 120);
     this.drawSimpleCloud(900, 90);
+  }
 
-    // Simple ground/grass
-    this.ctx.fillStyle = '#22C55E';
+  private drawSimpleCloud(x: number, y: number) {
+    this.ctx.beginPath();
+    this.ctx.arc(x, y, 25, 0, Math.PI * 2);
+    this.ctx.arc(x + 20, y, 30, 0, Math.PI * 2);
+    this.ctx.arc(x + 40, y, 25, 0, Math.PI * 2);
+    this.ctx.fill();
+  }
+
+  private drawGround(color: string) {
+    this.ctx.fillStyle = color;
     this.ctx.fillRect(0, this.canvas.height - 100, this.canvas.width, 100);
+  }
 
-    // Simple palm trees (Florida touch)
+  private drawPalmTrees() {
     this.ctx.save();
     const parallaxX = -this.camera.x * 0.3;
     this.ctx.translate(parallaxX, 0);
@@ -228,13 +292,39 @@ export default class Game {
     this.ctx.restore();
   }
 
-  private drawSimpleCloud(x: number, y: number) {
-    this.ctx.fillStyle = '#FFFFFF';
+  private drawSwampTrees() {
+    this.ctx.save();
+    const parallaxX = -this.camera.x * 0.3;
+    this.ctx.translate(parallaxX, 0);
+    
+    // Dead/bare trees for swamp
+    this.drawDeadTree(250, this.canvas.height - 100);
+    this.drawDeadTree(550, this.canvas.height - 100);
+    this.drawDeadTree(850, this.canvas.height - 100);
+    
+    this.ctx.restore();
+  }
+
+  private drawMountainPeaks() {
+    this.ctx.save();
+    const parallaxX = -this.camera.x * 0.2;
+    this.ctx.translate(parallaxX, 0);
+    
+    // Mountain silhouettes
+    this.ctx.fillStyle = '#6B7280';
     this.ctx.beginPath();
-    this.ctx.arc(x, y, 25, 0, Math.PI * 2);
-    this.ctx.arc(x + 20, y, 30, 0, Math.PI * 2);
-    this.ctx.arc(x + 40, y, 25, 0, Math.PI * 2);
+    this.ctx.moveTo(0, this.canvas.height - 200);
+    this.ctx.lineTo(200, this.canvas.height - 350);
+    this.ctx.lineTo(400, this.canvas.height - 280);
+    this.ctx.lineTo(600, this.canvas.height - 400);
+    this.ctx.lineTo(800, this.canvas.height - 320);
+    this.ctx.lineTo(1000, this.canvas.height - 380);
+    this.ctx.lineTo(1200, this.canvas.height - 200);
+    this.ctx.lineTo(1200, this.canvas.height);
+    this.ctx.lineTo(0, this.canvas.height);
     this.ctx.fill();
+    
+    this.ctx.restore();
   }
 
   private drawPalmTree(x: number, y: number) {
@@ -267,23 +357,36 @@ export default class Game {
     this.ctx.fill();
   }
 
-  private lightenColor(color: string, percent: number): string {
-    // Simple color lightening function
-    const num = parseInt(color.replace("#", ""), 16);
-    const amt = Math.round(2.55 * percent);
-    const R = (num >> 16) + amt;
-    const G = (num >> 8 & 0x00FF) + amt;
-    const B = (num & 0x0000FF) + amt;
-    return "#" + (0x1000000 + (R < 255 ? R < 1 ? 0 : R : 255) * 0x10000 +
-      (G < 255 ? G < 1 ? 0 : G : 255) * 0x100 +
-      (B < 255 ? B < 1 ? 0 : B : 255)).toString(16).slice(1);
+  private drawDeadTree(x: number, y: number) {
+    // Dead tree trunk
+    this.ctx.fillStyle = '#4A5568';
+    this.ctx.fillRect(x, y - 60, 6, 60);
+    
+    // Bare branches
+    this.ctx.strokeStyle = '#4A5568';
+    this.ctx.lineWidth = 2;
+    this.ctx.beginPath();
+    this.ctx.moveTo(x + 3, y - 40);
+    this.ctx.lineTo(x - 10, y - 50);
+    this.ctx.moveTo(x + 3, y - 40);
+    this.ctx.lineTo(x + 16, y - 55);
+    this.ctx.moveTo(x + 3, y - 20);
+    this.ctx.lineTo(x - 8, y - 25);
+    this.ctx.moveTo(x + 3, y - 20);
+    this.ctx.lineTo(x + 14, y - 30);
+    this.ctx.stroke();
   }
 
   private drawUI() {
+    // Level indicator
+    this.ctx.fillStyle = '#1A202C';
+    this.ctx.font = 'bold 20px Arial';
+    this.ctx.fillText(`Level ${this.currentLevelData.id}: ${this.currentLevelData.name}`, 20, 30);
+    
     // Score
     this.ctx.fillStyle = '#1A202C';
-    this.ctx.font = 'bold 24px Arial';
-    this.ctx.fillText(`Score: ${this.score}`, 20, 40);
+    this.ctx.font = 'bold 18px Arial';
+    this.ctx.fillText(`Score: ${this.score}`, 20, 55);
 
     // Game over/win screens
     if (this.gameOver) {
@@ -297,7 +400,7 @@ export default class Game {
       
       this.ctx.fillStyle = '#F7FAFC';
       this.ctx.font = '24px Arial';
-      this.ctx.fillText('Refresh to play again', this.canvas.width / 2, this.canvas.height / 2 + 20);
+      this.ctx.fillText('Press R to restart', this.canvas.width / 2, this.canvas.height / 2 + 20);
       this.ctx.textAlign = 'left';
     }
 
@@ -308,10 +411,16 @@ export default class Game {
       this.ctx.fillStyle = '#F7FAFC';
       this.ctx.font = 'bold 48px Arial';
       this.ctx.textAlign = 'center';
-      this.ctx.fillText('You made it to the Town Center!', this.canvas.width / 2, this.canvas.height / 2 - 50);
+      this.ctx.fillText(`Level ${this.currentLevelData.id} Complete!`, this.canvas.width / 2, this.canvas.height / 2 - 50);
       this.ctx.font = '24px Arial';
       this.ctx.fillText(`Final Score: ${this.score}`, this.canvas.width / 2, this.canvas.height / 2);
-      this.ctx.fillText('Refresh to play again', this.canvas.width / 2, this.canvas.height / 2 + 40);
+      
+      const nextLevel = this.currentLevelData.id + 1;
+      if (nextLevel <= LEVELS.length) {
+        this.ctx.fillText(`Loading Level ${nextLevel}...`, this.canvas.width / 2, this.canvas.height / 2 + 40);
+      } else {
+        this.ctx.fillText('All levels complete!', this.canvas.width / 2, this.canvas.height / 2 + 40);
+      }
       this.ctx.textAlign = 'left';
     }
   }
